@@ -45,7 +45,7 @@ class LoadBalancer():
                 else:
                     print('Topics changed but count remained same')
                     #skip over replica changes and check to see if we need to redistribute
-                    distribute_topics_to_replicas
+                    distribute_topics_to_replicas()
                     
         def update_replicas(self, count):
             replicas = self.zk.get_children(replica_root_path)
@@ -62,9 +62,44 @@ class LoadBalancer():
                    self.zk.delete(path)
                    print(f'Deleted replica {path}')
           
-             distribute_topics_to_replicas
+             distribute_topics_to_replicas()
                         
             #register dicts for pubs subs and brokers?
         def distribute_topics_to_replicas():
-            topics = self.zk.get_children(self.topic_root_path)
-            
+            replicas = self.zk.get_children(replica_root_path)
+            topics_sorted = self.zk.get_children(self.topic_root_path).sort()
+            #for topics a..n,n+1..n+3, n+4...n+7,...each set updates the pubs and sub sockets
+            for i in len(replicas):
+                rep_ip = zk.server.get(replicas[i]).decode('utf-8') #might need to get path instead of object
+                for j in range (TOPIC_THRESHOLD):
+                    t = topics_sorted[j]
+                    zk.server.set(f'/{t}',rep_ip)
+                    #update topic pubs/subs for 
+                    
+                    
+                    
+        def replica_watch():
+            @self.zk.ChildrenWatch(self.replica_root_path)
+            def replica_watcher(children):
+                #find which replica a topic belongs to
+                #update_publisher
+                pub_path = "/topic/" + self.topic
+                intf = zk.server.get(pub.path).decode('utf-8')
+                conn_str = f'tcp://{inf}:{self.port}'
+                self.socket.connect(conn_str)
+                time.sleep(5)
+                #return lamdbda to publisher
+                
+                
+                #update_subscriber
+            @self.zk.ChildrenWatch(self.replica_root_path)
+            def replica_watcher(children):
+                #find which replica a topic belongs to
+                #update_publisher
+                pub_path = "/topic/" + self.topic
+                intf = zk.server.get(pub.path).decode('utf-8')
+                conn_str = f'tcp://{inf}:{self.port}'
+                self.socket.connect(conn_str)
+                time.sleep(5)
+                #return lamdbda to publisher
+                
