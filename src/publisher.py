@@ -1,7 +1,7 @@
 import sys
 from random import randrange
 import argparse
-from zutils import Publisher
+from zutils_seq import Publisher
 import time
 import uuid
 
@@ -30,4 +30,6 @@ while True:
     msg = f'{pub_id} {temperature} {relhumidity} {sent_time}'
 
     publish(zipcode, msg)
-    time.sleep(0.0001)
+    #TODO - this sleep func is not causing any delay in proxy terminal
+    #it does sleep when going to subscriber terminal
+    time.sleep(1)
