@@ -84,6 +84,10 @@ class Proxy():
             self.replica_socket.bind(f"tcp://*:{self.replica_port}")
             print(f'- Cluster Port: {self.replica_port}')
             
+            #Register Socket - receives register request from pub - sends resp with IP of load balanced broker(s) for that topic
+            self.register_socket = self.context.socket(zmq.REP)
+            self.register_socket.bind(f'tpc://*:{self.register_port}')
+            
             #Removed blocking proxy to set up registration vs. publish
             #zmq.proxy(front_end, back_end)
             self.get_pub_msg()
@@ -167,25 +171,21 @@ class Proxy():
                 pubid = message[1]
                 topic = message[2]
                 strength = message[3]
-                history = message[4]
-                self.update_data('publisher', pubid, topic, strength, history, '')
-                #RUN BALANCING ALGO - update registry then send
+                self.update_data('publisher', pubid, topic, strength, '')
                 self.replica_socket.send_string(msg)
                 print('#### Sent register pub state transaction to cluster ####')
-                
             else:
-                #CHECK registry then send to correct broker ip xpub
                 self.back_end.send_string(msg)
                 print("- Forward publication...")
    
-    def update_data(self, add_this, pubid, topic, strength, history, publication):
+    def update_data(self, add_this, pubid, topic, strength, publication):
         print('\n#### Run update pub state func ####')
         try:
             if add_this == 'publisher':
                 if topic not in self.pub_data.keys():
-                    self.pub_data.update({topic: {pubid: {'strength': strength, 'history': history, 'broker_ip': "", 'publications': []}}})
+                    self.pub_data.update({topic: {pubid: {'strength': strength, 'publications': []}}})
                 elif pubid not in self.pub_data[topic].keys():
-                    self.pub_data[topic].update({pubid: {'strength': strength, 'history': history, 'broker_ip': "", 'publications': []}})
+                    self.pub_data[topic].update({pubid: {'strength': strength, 'publications': []}})
             elif add_this == 'publication':
                 stored_publication = publication + '--' + str(time.time())
                 self.pub_data[topic][pubid]['publications'].append(stored_publication)
@@ -229,7 +229,6 @@ class Publisher():
         self.ip = get_ip()
         self.socket = context.socket(zmq.PUB)
         self.strength = randrange(1,11)
-        self.history = randrange(0,30)
         self.pubid = randrange(1000,10000)
         
     def start(self):
@@ -244,8 +243,6 @@ class Publisher():
 
         if self.proxy:  # PROXY MODE
 
-            #TODO - for load balancer - this should stay - just update semantics
-            #TODO - well just forward from proxy(now load balancer) to broker "n"
             @self.zk.DataWatch(self.proxy_path)
             def proxy_watcher(data, stat):
                 print(f"Publisher: proxy watcher triggered. data:{data}")
@@ -257,7 +254,7 @@ class Publisher():
                     
                     #socket needs time to connect otherwise will pass over send string
                     time.sleep(5)
-                    self.socket.send_string(f'register {self.pubid} {self.topic} {self.strength} {self.history}')
+                    self.socket.send_string(f'register {self.pubid} {self.topic} {self.strength}')
 
         else:  # FLOOD MODE
             conn_str = f'tcp://{self.ip}:{self.port}'
@@ -296,10 +293,9 @@ class Publisher():
 
 class Subscriber():
 
-    def __init__(self, port=5556, zkserver="10.0.0.1", topic='12345', history = "15", proxy=True):
+    def __init__(self, port=5556, zkserver="10.0.0.1", topic='12345', proxy=True):
         self.port = port
         self.topic = topic
-        self.history = history
         self.proxy_path = "/proxy"
         self.path = f"/topic/{topic}"
         self.proxy = proxy
@@ -317,9 +313,6 @@ class Subscriber():
                 print(f"Subscriber: proxy watcher triggered. data:{data}")
                 if data is not None:
                     intf = data.decode('utf-8')
-                    #TODO for load balancing - will check registry rather than znode
-                    #TODO - Don't need znode because we'll just check topic,history,strength in registry
-                    lb_intf = self.find_my_publisher(self.topic, self.history)
                     conn_str = f'tcp://{intf}:{self.port}'
                     print(f"connecting: {conn_str}")
                     self.socket.connect(conn_str)
@@ -338,31 +331,6 @@ class Subscriber():
         self.socket.setsockopt_string(zmq.SUBSCRIBE, self.topic)
 
         return lambda: self.socket.recv_string()
-    
-    def find_my_publisher(mytopic, myhistreq):
-        tmp_strength = {}
-        tmp_history = {}
-        
-        for k,v in self.pub_data[mytopic].items():
-            tmp_strength[k] = v['strength']
-    
-        for k,v in self.pub_data[mytopic].items():
-            tmp_history[k] = v['history']
-
-        meets_hist_req = dict((k, v) for k, v in tmp_history.items() if v >= myhistreq).keys()    
-        
-        max_val = None
-        
-        for p in meets_hist_req:
-            tmp_val = self.pub_data[mytopic][p]['strength']
-            if max_val == None:
-                max_val = tmp_val 
-                max_ip = self.pub_data[mytopic][p]['bip']
-            elif max_val < tmp_val:
-                max_val = tmp_val
-                max_ip = self.pub_data[mytopic][p]['bip']
-                
-        return max_ip
 
     def plot_data(self, data_set, label=""):
 

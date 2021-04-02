@@ -11,6 +11,8 @@ parser.add_argument("--proxy", action="store_true", default=False)
 parser.add_argument("--zkserver", "--zkintf", default="10.0.0.1")
 parser.add_argument("--port", default="5556")
 parser.add_argument("--topic", default="12345")
+#Added history argument
+parser.add_argument("--history", default="15")
 parser.add_argument("--sample_size", "--samples", default=100)
 parser.add_argument("--label", default="default")
 args = parser.parse_args()
@@ -22,10 +24,11 @@ sample_size = int(args.sample_size)
 zkserver = args.zkserver
 label = args.label
 sub_id = uuid.uuid4()
+history = args.history
 
 # mxm - returns topic temp humid timestamp
 
-subscriber = Subscriber(port, zkserver, topic, proxy)
+subscriber = Subscriber(port, zkserver, topic, history, proxy)
 notify = subscriber.start()
 
 plot_data_set = []
