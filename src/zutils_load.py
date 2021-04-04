@@ -39,8 +39,13 @@ class Proxy():
         self.replica_port = "5557"
         self.register_socket = None
         self.register_port = "5558"
-        #create two kinds loadbalancer, which is original proxy, and workers that handled balanced topics
-        self.isworker = False
+        self.replicas=[]
+        self.replica_root_path = "/brokers"
+        self.replica_standby_path = "/replicas"
+        self.standbys = []
+        self.topics = []
+        self.TOPIC_THRESHOLD = 3
+
         
         #Create znode for each instance of this class
         self.my_path = self.zk.create(self.elect_candidate_path, value=b'', sequence=True, ephemeral=True, makepath=True)
@@ -86,6 +91,22 @@ class Proxy():
             self.replica_socket.bind(f"tcp://*:{self.replica_port}")
             print(f'- Cluster Port: {self.replica_port}')
             
+            #TODO - set up topic watch to check and redistribute load
+            @self.zk.ChildrenWatch(self.topic_root_path)
+            def topic_watch(children):
+                print(f"Topic Children Change")
+                self.topics = children
+                if self.topics is not None:
+                    new_repl_cnt = ceil(len(self.topics)/TOPIC_THRESHOLD)
+                    old_repl_cnt = self.zk.get_children(self.replica_root_path)
+                if old_repl_cnt != new_repl_cnt:
+                    #create/delete replicase to match count - then call distribute topics
+                    self.update_replicas(new_repl_cnt)
+                else:
+                    print('Topics changed but count remained same')
+                    #skip over create/delete replicachanges and check to see if we need to redistribute
+                    self.distribute_topics_to_replicas()
+                    
             #Removed blocking proxy to set up registration vs. publish
             #zmq.proxy(front_end, back_end)
             self.get_pub_msg()
@@ -218,7 +239,49 @@ class Proxy():
             # elif msg_type == 'publish':
             #     publication = message[4]
             #     self.update_data('publication', pubid, topic, strength, publication)
+            #only called if need to change count of replicas            
+    
+    def update_replicas(self, rep_count):
+        #list of working brokers, in order, if any e.g. ["xxxxxxxx1", "xxxxxxxx2", ...]
+        self.replicas = self.zk.get_children(self.replica_root_path).sort()
+        print(f'UpdateReplicas - Current Working Reps: {self.replicas}')
+        
+        #list of sorted standbys
+        self.standbys = self.zk.get_children(self.replica_standby_path).sort()
+        
+        crnt_stdby_idx = len(self.replicas) - 1
+        change_rep_num = rep_count - len(self.replicas)
+        
+        #TODO - Need data watch for both replicas and standbys
+        
+        #create
+        if change_rep_num > 0:
+            for i in range(1, change_rep_num + 1):
+                #get ip value from standby - path listed in self.replicas
+                tmp_ip = self.zk.get(path=self.replica_standby_path + "/" + self.standbys[crnt_stdby_idx + i])
+                print(f'{i} -new lb broker ip: {tmp_ip}')
+                self.zk.create(self.replica_root_path + "/" + self.standbys[crnt_stdby_idx + i], ephemeral=True, value=tmp_ip)
+        
+        #delete
+        elif change_rep_num < 0:
+            for i in range(1, -change_rep_num + 1):
+                path = self.replica_root_path + "/" + self.replicas[-i]
+                self.zk.delete(path)
+                self.replicas.pop()
+                print(f'Deleted replica {path}')
                 
+        self.distribute_topics_to_replicas()
+                    
+        #register dicts for pubs subs and brokers?
+    def distribute_topics_to_replicas(self):
+        #for topics a..n,n+1..n+3, n+4...n+7,...each set updates the pubs and sub sockets
+        for i in len(self.replicas):
+            rep_ip = self.zk.server.get(self.replicas[i]).decode('utf-8') #might need to get path instead of object
+            idx = 0
+            for j in range (idx * self.TOPIC_THRESHOLD, self.TOPIC_THRESHOLD + i * self.TOPIC_THRESHOLD):
+                self.zk.server.set(f'/topics/{self.topics[j]}',rep_ip)
+                #update topic pubs/subs fo
+                           
 class Publisher():
 
     def __init__(self, port=5555, zkserver="10.0.0.1", topic=12345, proxy=True):

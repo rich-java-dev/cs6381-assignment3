@@ -24,7 +24,7 @@ class Replica():
         self.topic_threshold = 3
         self.context = zmq.Context()
         self.ip = get_ip()
-        self.topic_root_path = "/topics"
+        self.topic_root_path = "/topic"
         #replicas change from replica standby to broker when determined by load balancer
         self.replica_root_path = "/brokers"
         self.replica_standby_path = "/replicas"
@@ -32,8 +32,13 @@ class Replica():
         self.replicas = []
         self.standbys =[]
         self.topics = []
+        self.front_end = None
+        self.back_end = None
+        self.replica_socket = None # set up PUSH/PULL socket for state transfer
+        self.replica_port = "5557   "
         
 
+    #TODO - watch leader and connect to replica socket to get pub_data registry state
         #ensure that broker root path exists
         if self.zk.exists(self.replica_root_path) is None:
             self.zk.create(self.path, value=b'', ephemeral=True, makepath=True)
@@ -42,8 +47,23 @@ class Replica():
         if self.zk.exists(self.replica_standby_path) is None:
             self.zk.create(self.path, value=b'', ephemeral=True, makepath=True)
  
-        #create replica sequential path for each instance created
+        #create replica standby sequential path for each instance created
         self.my_path = self.zk.create(self.replica_standby_path, value=self.ip, sequence=True, ephemeral=True, makepath=True)
+        
+        print(f'\n#### My Znode Details ####')
+        print(f'- ZNode Path: {self.my_path}')
+        print(f'- IP: {self.ip}')
+        
+        #Set up zmq proxy socket
+        self.front_end = self.context.socket(zmq.SUB)
+        self.front_end.bind(f"tcp://*:{self.in_bound}")
+        self.front_end.subscribe("")
+        self.back_end = self.context.socket(zmq.PUB)
+        self.back_end.setsockopt(zmq.XPUB_VERBOSE, 1)
+        self.back_end.bind(f"tcp://*:{self.out_bound}") 
+        print(
+                f'- Pub/Sub Ports: in_bound={self.in_bound}, out_bound={self.out_bound}')            
+        zmq.proxy(self.front_end, self.back_end)
 
     #watch topic children and recalculate replica count based on any changes       
         def lb_topics():
@@ -89,21 +109,20 @@ class Replica():
                 for i in range(1, -change_rep_num + 1):
                     path = self.replica_root_path + "/" + self.replicas[-i]
                     self.zk.delete(path)
+                    self.replicas.pop()
                     print(f'Deleted replica {path}')
                     
             self.distribute_topics_to_replicas()
                         
             #register dicts for pubs subs and brokers?
         def distribute_topics_to_replicas():
-            replicas = self.zk.get_children(self.replica_root_path)
-            topics_sorted = self.zk.get_children(self.topic_root_path).sort()
             #for topics a..n,n+1..n+3, n+4...n+7,...each set updates the pubs and sub sockets
-            for i in len(replicas):
-                rep_ip = self.zk.server.get(replicas[i]).decode('utf-8') #might need to get path instead of object
-                for j in range (TOPIC_THRESHOLD):
-                    t = topics_sorted[j]
-                    self.zk.server.set(f'/{t}',rep_ip)
-                    #update topic pubs/subs for 
+            for i in len(self.replicas):
+                rep_ip = self.zk.server.get(self.replicas[i]).decode('utf-8') #might need to get path instead of object
+                idx = 0
+                for j in range (idx * TOPIC_THRESHOLD, TOPIC_THRESHOLD + i * TOPIC_THRESHOLD):
+                    self.zk.server.set(f'/topics/{self.topics[j]}',rep_ip)
+                    #update topic pubs/subs fo
                     
                     
                     
