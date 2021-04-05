@@ -13,6 +13,7 @@ from kazoo.exceptions import (
     NoNodeError,
     KazooException
 )
+from math import ceil
 
 context = zmq.Context()
 
@@ -21,7 +22,7 @@ class Proxy():
     def __init__(self, zkserver="10.0.0.1", in_bound=5555, out_bound=5556):
         self.in_bound = in_bound
         self.out_bound = out_bound
-        self.path = '/proxy'
+        self.leader_path = '/leader'
         self.elect_root_path = '/election'
         self.elect_candidate_path = '/election/candidate_sessionid_'
         self.pub_root_path = '/publishers'
@@ -41,7 +42,8 @@ class Proxy():
         self.register_port = "5558"
         self.replicas=[]
         self.replica_root_path = "/brokers"
-        self.replica_standby_path = "/replicas"
+        self.replica_standby_path = "/workers"
+        self.topic_root_path = "/topic"
         self.standbys = []
         self.topics = []
         self.TOPIC_THRESHOLD = 3
@@ -54,8 +56,8 @@ class Proxy():
         print(f'- IP: {self.ip}')
 
         #ensure that leader path exists
-        if self.zk.exists(self.path) is None:
-            self.zk.create(self.path, value=b'', ephemeral=True, makepath=True)
+        if self.zk.exists(self.leader_path) is None:
+            self.zk.create(self.leader_path, value=b'', ephemeral=True, makepath=True)
         
         #get all chsldren as candidates under '/election' parent
         self.candidate_list = self.zk.get_children(self.elect_root_path)
@@ -67,18 +69,19 @@ class Proxy():
     def start(self):
         #Current Znode is first in sequential candidate list and becomes LEADER
         if self.my_path.endswith(self.candidate_list[0]):
-            self.leader_node = self.my_path
+            self.leader_node = self.my_path #leader node takes /election/client_sessionid_xxxxxxxx
             self.isleader = True
             print(f'\n- My Status: **LEADER**')
             
             #set method requires byte string
             encoded_ip = self.ip.encode('utf-8')
-            self.zk.set('/proxy', encoded_ip)
-            self.zk.set(self.my_path, encoded_ip)
+            self.zk.set(self.leader_path, encoded_ip) #set leader value to current node ip
+            self.zk.set(self.my_path, encoded_ip) # set candidate value to current node ip
             
             #Set up zmq proxy socket
             self.front_end = self.context.socket(zmq.SUB)
             self.front_end.bind(f"tcp://*:{self.in_bound}")
+            #TODO - Workaround to get replicate state messages on same socket as publications
             self.front_end.subscribe("")
             self.back_end = self.context.socket(zmq.PUB)
             self.back_end.setsockopt(zmq.XPUB_VERBOSE, 1)
@@ -94,19 +97,22 @@ class Proxy():
             #TODO - set up topic watch to check and redistribute load
             @self.zk.ChildrenWatch(self.topic_root_path)
             def topic_watch(children):
-                print(f"Topic Children Change")
-                self.topics = children
-                if self.topics is not None:
-                    new_repl_cnt = ceil(len(self.topics)/TOPIC_THRESHOLD)
-                    old_repl_cnt = self.zk.get_children(self.replica_root_path)
-                if old_repl_cnt != new_repl_cnt:
-                    #create/delete replicase to match count - then call distribute topics
-                    self.update_replicas(new_repl_cnt)
-                else:
-                    print('Topics changed but count remained same')
-                    #skip over create/delete replicachanges and check to see if we need to redistribute
-                    self.distribute_topics_to_replicas()
-                    
+                try: 
+                    print(f"\nTopic Children Watch Triggered")
+                    self.topics = children
+                    if self.topics is not None:
+                        new_repl_cnt = ceil(len(self.topics)/self.TOPIC_THRESHOLD)
+                        old_repl_cnt = self.zk.get_children(self.replica_root_path)
+                        
+                        if old_repl_cnt != new_repl_cnt:
+                            #create/delete replicase to match count - then call distribute topics
+                            self.update_replicas(new_repl_cnt)
+                        else:
+                            print('- Topics changed but count remained same')
+                            #skip over create/delete replicachanges and check to see if we need to redistribute
+                            self.distribute_topics_to_replicas()
+                except NoNodeError:
+                    print("- No Topics yet - Pass")                         
             #Removed blocking proxy to set up registration vs. publish
             #zmq.proxy(front_end, back_end)
             self.get_pub_msg()
@@ -130,7 +136,7 @@ class Proxy():
             self.isleader = False
             leader_node = self.candidate_list[0]
             print(f'- Following leader: {leader_node}')
-            leader_ip = self.zk.get(self.path)[0].decode('utf-8')
+            leader_ip = self.zk.get(self.leader_path)[0].decode('utf-8')
             print(f'- Following leader: {leader_ip}')
             
             #Find previous seq node in candidate list
@@ -151,8 +157,8 @@ class Proxy():
         print(f'- **New Leader Won Election**')
         print(f'- Won election, self.path: {self.my_path}')
         #check leader barrier node
-        if self.zk.exists(self.path) is None:
-            self.zk.create(self.path, value=self.ip.encode(
+        if self.zk.exists(self.leader_path) is None:
+            self.zk.create(self.leader_path, value=self.ip.encode(
                     'utf-8'), ephemeral=True, makepath=True)
             print(f'- My Status: **LEADER**')
             print(f'- MY IP: {self.ip}')
@@ -194,7 +200,7 @@ class Proxy():
                 self.update_data('publisher', pubid, topic, strength, history, '')
                 #RUN BALANCING ALGO - update registry then send
                 self.replica_socket.send_string(msg)
-                print('#### Sent register pub state transaction to cluster ####')
+                print('#### Sent register pub state transaction to load cluster ####')
                 
             else:
                 #CHECK registry then send to correct broker ip xpub
@@ -233,8 +239,9 @@ class Proxy():
             pubid = message[1]
             topic = message[2]
             strength = message[3]
+            history = message[4]
             if msg_type == 'register':
-                self.update_data('publisher', pubid, topic, strength, '')
+                self.update_data('publisher', pubid, topic, strength, history, '')
             #IM HERE - not sure I'll use to store publications below
             # elif msg_type == 'publish':
             #     publication = message[4]
@@ -256,30 +263,36 @@ class Proxy():
         
         #create
         if change_rep_num > 0:
-            for i in range(1, change_rep_num + 1):
-                #get ip value from standby - path listed in self.replicas
-                tmp_ip = self.zk.get(path=self.replica_standby_path + "/" + self.standbys[crnt_stdby_idx + i])
-                print(f'{i} -new lb broker ip: {tmp_ip}')
-                self.zk.create(self.replica_root_path + "/" + self.standbys[crnt_stdby_idx + i], ephemeral=True, value=tmp_ip)
-        
+            if len(self.standbys) - len(self.replicas) >= change_rep_num:
+                for i in range(1, change_rep_num + 1):
+                    #get ip value from standby - path listed in self.replicas
+                    tmp_ip = self.zk.get(path=self.replica_standby_path + "/" + self.standbys[crnt_stdby_idx + i])
+                    print(f'{i} -new lb broker ip: {tmp_ip}')
+                    self.zk.create(self.replica_root_path + "/" + self.standbys[crnt_stdby_idx + i], ephemeral=True, value=tmp_ip)
+            else:
+                print("Error - need to startup some more replica workers")
         #delete
         elif change_rep_num < 0:
-            for i in range(1, -change_rep_num + 1):
-                path = self.replica_root_path + "/" + self.replicas[-i]
-                self.zk.delete(path)
-                self.replicas.pop()
-                print(f'Deleted replica {path}')
+            if len(self.replicas) < -change_rep_num:
+                for i in range(1, -change_rep_num + 1):
+                    path = self.replica_root_path + "/" + self.replicas[-i]
+                    self.zk.delete(path)
+                    self.replicas.pop()
+                    print(f'Deleted replica {path}')
+            else:
+                print("Error - local replica list is smaller than than the workers it expects to delete")
                 
         self.distribute_topics_to_replicas()
                     
         #register dicts for pubs subs and brokers?
     def distribute_topics_to_replicas(self):
-        #for topics a..n,n+1..n+3, n+4...n+7,...each set updates the pubs and sub sockets
-        for i in len(self.replicas):
+        #TODO - need to set up different distributions
+        #sequential distribution where first replicas get topics up to threshold, last node gets whatever's left
+        for i in range(0, len(self.replicas)):
             rep_ip = self.zk.server.get(self.replicas[i]).decode('utf-8') #might need to get path instead of object
             idx = 0
             for j in range (idx * self.TOPIC_THRESHOLD, self.TOPIC_THRESHOLD + i * self.TOPIC_THRESHOLD):
-                self.zk.server.set(f'/topics/{self.topics[j]}',rep_ip)
+                self.zk.server.set(self.topic_root_path + "/" + self.topics[j], rep_ip)
                 #update topic pubs/subs fo
                            
 class Publisher():
@@ -289,7 +302,7 @@ class Publisher():
         self.proxy = proxy
         self.topic = topic
         self.path = f"/topic/{topic}"
-        self.proxy_path = "/proxy"
+        self.leader_path = "/leader"
         self.zk = start_kazoo_client(zkserver)
         self.ip = get_ip()
         self.socket = context.socket(zmq.PUB)
@@ -304,14 +317,21 @@ class Publisher():
         #create parent znode
         if not self.zk.exists("/topic"):
             self.zk.create("/topic")
+            
+        #TODO = create topic under parent /topic/ - trigger children watch above
+        if not self.zk.exists(self.path):
+            self.zk.create(self.path, value=self.ip.encode('utf-8'), ephemeral=True)
+            print(f'Created Znode: {self.path} : {self.ip}')
 
-        print(f'Publishing w/ proxy={self.proxy} and topic:{self.topic}')
+            
+
+        print(f'Publishing - Proxy: {self.proxy}, Topic: {self.topic}')
 
         if self.proxy:  # PROXY MODE
 
             #TODO - for load balancer - this should stay - just update semantics
             #TODO - well just forward from proxy(now load balancer) to broker "n"
-            @self.zk.DataWatch(self.proxy_path)
+            @self.zk.DataWatch(self.leader_path)
             def proxy_watcher(data, stat):
                 print(f"Publisher: proxy watcher triggered. data:{data}")
                 if data is not None:
@@ -365,7 +385,7 @@ class Subscriber():
         self.port = port
         self.topic = topic
         self.history = history
-        self.proxy_path = "/proxy"
+        self.leader_path = "/proxy"
         self.path = f"/topic/{topic}"
         self.proxy = proxy
         self.ip = get_ip()
@@ -377,7 +397,7 @@ class Subscriber():
 
         if self.proxy:  # PROXY MODE
 
-            @self.zk.DataWatch(self.proxy_path)
+            @self.zk.DataWatch(self.leader_path)
             def proxy_watcher(data, stat):
                 print(f"Subscriber: proxy watcher triggered. data:{data}")
                 if data is not None:
@@ -404,7 +424,7 @@ class Subscriber():
 
         return lambda: self.socket.recv_string()
     
-    def find_my_publisher(mytopic, myhistreq):
+    def find_my_publisher(self,mytopic, myhistreq):
         tmp_strength = {}
         tmp_history = {}
         
