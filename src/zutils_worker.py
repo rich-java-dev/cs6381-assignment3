@@ -22,18 +22,18 @@ class Worker():
         self.my_path = None
         self.front_end = None
         self.back_end = None
-        self.replica_standby_path = "/workers"
+        self.replica_standby_path = "/workers/"
 
         #if self.zk.exists(self.replica_root_path) is None:
         #    self.zk.create(self.path, value=b'', ephemeral=True, makepath=True)
         
         if self.zk.exists(self.replica_standby_path) is None:
-            self.zk.create(self.replica_standby_path, value=b'', ephemeral=True, makepath=True)
+            self.zk.create(self.replica_standby_path)
  
         encoded_ip = self.ip.encode('utf-8')
         self.my_path = self.zk.create(self.replica_standby_path, value=encoded_ip, sequence=True, ephemeral=True, makepath=True)
         
-        print(f'\n#### My Znode Details ####')
+        print(f'\n#### My WORKER Details ####')
         print(f'- ZNode Path: {self.my_path}')
         print(f'- IP: {self.ip}')
         

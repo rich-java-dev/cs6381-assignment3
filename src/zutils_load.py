@@ -14,8 +14,10 @@ from kazoo.exceptions import (
     KazooException
 )
 from math import ceil
+import json
 
 context = zmq.Context()
+db_data = {}
 
 class Proxy():
 
@@ -39,7 +41,7 @@ class Proxy():
         self.replica_socket = None # set up PUSH/PULL socket for state transfer
         self.replica_port = "5557"
         self.register_socket = None
-        self.register_port = "5558"
+        self.register_port = "5559"
         self.replicas=[]
         self.replica_root_path = "/brokers"
         self.replica_standby_path = "/workers"
@@ -51,7 +53,7 @@ class Proxy():
         
         #Create znode for each instance of this class
         self.my_path = self.zk.create(self.elect_candidate_path, value=b'', sequence=True, ephemeral=True, makepath=True)
-        print(f'\n#### My Znode Details ####')
+        print(f'\n#### My LOAD REPLICA Details ####')
         print(f'- ZNode Path: {self.my_path}')
         print(f'- IP: {self.ip}')
 
@@ -93,6 +95,13 @@ class Proxy():
             self.replica_socket = self.context.socket(zmq.PUB)
             self.replica_socket.bind(f"tcp://*:{self.replica_port}")
             print(f'- Cluster Port: {self.replica_port}')
+            
+            
+            self.register_socket = self.context.socket(zmq.PUB)
+            self.register_socket.bind(f"tcp://*:{self.register_port}")
+            print(f'- Set Up Sub Register {self.register_port}')
+            sub_regis_thr = threading.Thread(target=self.get_sub_register)
+            sub_regis_thr.start()
             
             #TODO - set up topic watch to check and redistribute load
             @self.zk.ChildrenWatch(self.topic_root_path)
@@ -179,10 +188,24 @@ class Proxy():
             self.replica_socket.bind(f"tcp://*:{self.replica_port}")
             print(f'- Cluster Port: {self.replica_port}')
             
+            self.register_socket = self.context.socket(zmq.PUB)
+            self.register_socket.bind(f"tcp://*:{self.register_port}")
+            
+            sub_regis_thr = threading.Thread(target=self.get_sub_register)
+            sub_regis_thr.start()
             #Removed blocking proxy to set up registration vs. publish
             #zmq.proxy(front_end, back_end)
             self.get_pub_msg()
-              
+            
+    def get_sub_register(self):
+        print('********SUB REG THREAD*******')
+        while True:
+            print("True Loop in SUB REG")
+            self.register_socket.send_string(f'{self.pub_data}')
+            print("()--WHAT I SENT TO REG SUB --()")    
+            print(f'{self.pub_data}')
+            time.sleep (1)  
+          
     def get_pub_msg(self):
         print('\n####  Run get pub message func ####')
         #barrier until become leader
@@ -205,7 +228,7 @@ class Proxy():
             else:
                 #CHECK registry then send to correct broker ip xpub
                 self.back_end.send_string(msg)
-                print("- Forward publication...")
+                #print(f"- Forward publication...{msg}")
    
     def update_data(self, add_this, pubid, topic, strength, history, publication):
         print('\n#### Run update pub state func ####')
@@ -219,6 +242,7 @@ class Proxy():
                 stored_publication = publication + '--' + str(time.time())
                 self.pub_data[topic][pubid]['publications'].append(stored_publication)
             print(f'- Updated Local State: {self.pub_data}')
+            db_data = self.pub_data
         except KeyError as ex:
             print(ex)
 
@@ -385,13 +409,16 @@ class Subscriber():
         self.port = port
         self.topic = topic
         self.history = history
-        self.leader_path = "/proxy"
+        self.leader_path = "/leader"
         self.path = f"/topic/{topic}"
         self.proxy = proxy
         self.ip = get_ip()
         self.socket = context.socket(zmq.SUB)
         self.zk = start_kazoo_client(zkserver)
-
+        self.pub_data = None
+        self.register_port = '5559'
+        self.register_socket = None
+    
     def start(self):
         print(f"Subscriber: {self.ip}")
 
@@ -402,8 +429,17 @@ class Subscriber():
                 print(f"Subscriber: proxy watcher triggered. data:{data}")
                 if data is not None:
                     intf = data.decode('utf-8')
+
+                    
+                    #connect to register socket to get pub_data
+                    self.register_socket = context.socket(zmq.SUB)
+                    self.register_socket.subscribe("")
+                    self.register_socket.connect(f'tcp://{intf}:{self.register_port}')
+                    sub_recv_pubdata = threading.Thread(target=self.get_pub_registry)
+                    sub_recv_pubdata.start()
                     #TODO for load balancing - will check registry rather than znode
                     #TODO - Don't need znode because we'll just check topic,history,strength in registry
+                    sub_recv_pubdata.join()
                     lb_intf = self.find_my_publisher(self.topic, self.history)
                     conn_str = f'tcp://{intf}:{self.port}'
                     print(f"connecting: {conn_str}")
@@ -424,10 +460,23 @@ class Subscriber():
 
         return lambda: self.socket.recv_string()
     
-    def find_my_publisher(self,mytopic, myhistreq):
+    def get_pub_registry(self):
+        print("SUB thread Waiting on pub data ")
+        message = self.register_socket.recv_string()
+        print(message)
+        print(type(message))
+        print("Sub thread recv info")
+        msg = eval(message)
+        print(type(msg))
+        print(msg["12345"])
+        self.pub_data = msg
+        
+    def find_my_publisher(self, topic, myhistreq):
+        """"pub_data = {'topic': {'pubid': {'strength':x, history: y, broker_ip: xxx.xx.xxx, publications: []}}}"""
+        print(self.pub_data)
+        mytopic = str(topic)
         tmp_strength = {}
         tmp_history = {}
-        
         for k,v in self.pub_data[mytopic].items():
             tmp_strength[k] = v['strength']
     
@@ -442,10 +491,10 @@ class Subscriber():
             tmp_val = self.pub_data[mytopic][p]['strength']
             if max_val == None:
                 max_val = tmp_val 
-                max_ip = self.pub_data[mytopic][p]['bip']
+                max_ip = self.pub_data[mytopic][p]['broker_ip']
             elif max_val < tmp_val:
                 max_val = tmp_val
-                max_ip = self.pub_data[mytopic][p]['bip']
+                max_ip = self.pub_data[mytopic][p]['brocker_ip']
                 
         return max_ip
 
