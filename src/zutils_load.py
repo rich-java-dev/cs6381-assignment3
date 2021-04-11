@@ -96,32 +96,65 @@ class Proxy():
             self.replica_socket.bind(f"tcp://*:{self.replica_port}")
             print(f'- Cluster Port: {self.replica_port}')
             
-            
+            #Register socket just sends pub_data publisher registry dict to new subs
             self.register_socket = self.context.socket(zmq.PUB)
             self.register_socket.bind(f"tcp://*:{self.register_port}")
             print(f'- Set Up Sub Register {self.register_port}')
             sub_regis_thr = threading.Thread(target=self.get_sub_register)
             sub_regis_thr.start()
             
+           
+            @self.zk.ChildrenWatch(self.replica_standby_path)
+            def standby_watch(children):
+                print(f'\nStandby Worker Change Triggered')
+                time.sleep(1)
+                print("standby children")
+                print(children)
+
+                if not self.zk.exists(self.replica_root_path):
+                    self.zk.create(self.replica_root_path)
+                if not self.zk.get_children(self.replica_root_path):
+                    topic_num = len(self.topics)
+                    standby_num = len(children)
+                    broker_num = min(ceil(len(self.topics)/self.TOPIC_THRESHOLD),standby_num)
+                    print("broker_num:" + str(broker_num))
+                    for i in range(broker_num):
+                        broker_ip = self.zk.get(self.replica_standby_path +"/" + children[i])[0]
+                        self.zk.create(self.replica_root_path + "/", value = broker_ip, sequence=True, ephemeral=True)
+                
+                print("replica children")
+                c = self.zk.get_children(self.replica_root_path)
+                print(c)
+                #for each standby change to broker for the number of topics up to threshold
+                #if too many topics just set all standbys to broker
+                
             #TODO - set up topic watch to check and redistribute load
             @self.zk.ChildrenWatch(self.topic_root_path)
             def topic_watch(children):
+                print(f"\nTopic Children Watch Triggered")
+                time.sleep(1) #TRY REMOVING - may need to wait for znode to populate after trigger
+                print(children)
                 try: 
-                    print(f"\nTopic Children Watch Triggered")
+
                     self.topics = children
                     if self.topics is not None:
                         new_repl_cnt = ceil(len(self.topics)/self.TOPIC_THRESHOLD)
+
+#TODO - IM HERE - ERROR because no /broker - but there are standby replicas
                         old_repl_cnt = self.zk.get_children(self.replica_root_path)
-                        
                         if old_repl_cnt != new_repl_cnt:
                             #create/delete replicase to match count - then call distribute topics
+                            print("Change in count - create new replicas")
                             self.update_replicas(new_repl_cnt)
                         else:
                             print('- Topics changed but count remained same')
                             #skip over create/delete replicachanges and check to see if we need to redistribute
                             self.distribute_topics_to_replicas()
                 except NoNodeError:
-                    print("- No Topics yet - Pass")                         
+                    print("- No Topics yet - Pass")        
+                    
+                    
+
             #Removed blocking proxy to set up registration vs. publish
             #zmq.proxy(front_end, back_end)
             self.get_pub_msg()
@@ -200,10 +233,7 @@ class Proxy():
     def get_sub_register(self):
         print('********SUB REG THREAD*******')
         while True:
-            print("True Loop in SUB REG")
             self.register_socket.send_string(f'{self.pub_data}')
-            print("()--WHAT I SENT TO REG SUB --()")    
-            print(f'{self.pub_data}')
             time.sleep (1)  
           
     def get_pub_msg(self):
@@ -274,12 +304,17 @@ class Proxy():
     
     def update_replicas(self, rep_count):
         #list of working brokers, in order, if any e.g. ["xxxxxxxx1", "xxxxxxxx2", ...]
-        self.replicas = self.zk.get_children(self.replica_root_path).sort()
-        print(f'UpdateReplicas - Current Working Reps: {self.replicas}')
+        self.replicas = self.zk.get_children(self.replica_root_path)
+        print("update repl - length self repls")
+        print(len(self.replicas))
+        time.sleep(3)
+        
+        print(f'Update Replicas - Current Working Reps: {self.replicas}')
         
         #list of sorted standbys
-        self.standbys = self.zk.get_children(self.replica_standby_path).sort()
+        self.standbys = self.zk.get_children(self.replica_standby_path)
         
+#IM HERE - replicas is NoneTYPE
         crnt_stdby_idx = len(self.replicas) - 1
         change_rep_num = rep_count - len(self.replicas)
         
@@ -290,7 +325,8 @@ class Proxy():
             if len(self.standbys) - len(self.replicas) >= change_rep_num:
                 for i in range(1, change_rep_num + 1):
                     #get ip value from standby - path listed in self.replicas
-                    tmp_ip = self.zk.get(path=self.replica_standby_path + "/" + self.standbys[crnt_stdby_idx + i])
+                    #TODO - need to decode ip?
+                    tmp_ip = self.zk.get(path=self.replica_standby_path + "/" + self.standbys[crnt_stdby_idx + i])[0]
                     print(f'{i} -new lb broker ip: {tmp_ip}')
                     self.zk.create(self.replica_root_path + "/" + self.standbys[crnt_stdby_idx + i], ephemeral=True, value=tmp_ip)
             else:
@@ -313,10 +349,10 @@ class Proxy():
         #TODO - need to set up different distributions
         #sequential distribution where first replicas get topics up to threshold, last node gets whatever's left
         for i in range(0, len(self.replicas)):
-            rep_ip = self.zk.server.get(self.replicas[i]).decode('utf-8') #might need to get path instead of object
+            rep_ip = self.zk.get(self.replicas[i])[[0]] 
             idx = 0
             for j in range (idx * self.TOPIC_THRESHOLD, self.TOPIC_THRESHOLD + i * self.TOPIC_THRESHOLD):
-                self.zk.server.set(self.topic_root_path + "/" + self.topics[j], rep_ip)
+                self.zk.set(self.topic_root_path + "/" + self.topics[j], rep_ip)
                 #update topic pubs/subs fo
                            
 class Publisher():
@@ -325,6 +361,7 @@ class Publisher():
         self.port = port
         self.proxy = proxy
         self.topic = topic
+        self.topic_root_path = '/topic'
         self.path = f"/topic/{topic}"
         self.leader_path = "/leader"
         self.zk = start_kazoo_client(zkserver)
@@ -336,18 +373,19 @@ class Publisher():
         
     def start(self):
         print(f"Publisher: {self.ip}")
+        print(f'My Root: ' + self.path)
         self.init_monitor()
 
         #create parent znode
-        if not self.zk.exists("/topic"):
-            self.zk.create("/topic")
+        if not self.zk.exists(self.topic_root_path):
+            self.zk.create(self.topic_root_path)
+        else:
+            print("Exists: " + self.topic_root_path)
             
         #TODO = create topic under parent /topic/ - trigger children watch above
         if not self.zk.exists(self.path):
             self.zk.create(self.path, value=self.ip.encode('utf-8'), ephemeral=True)
             print(f'Created Znode: {self.path} : {self.ip}')
-
-            
 
         print(f'Publishing - Proxy: {self.proxy}, Topic: {self.topic}')
 
@@ -357,7 +395,7 @@ class Publisher():
             #TODO - well just forward from proxy(now load balancer) to broker "n"
             @self.zk.DataWatch(self.leader_path)
             def proxy_watcher(data, stat):
-                print(f"Publisher: proxy watcher triggered. data:{data}")
+                print(f"Publisher: leader load balancer watcher triggered. data:{data}")
                 if data is not None:
                     intf = data.decode('utf-8')
                     conn_str = f'tcp://{intf}:{self.port}'
@@ -441,7 +479,7 @@ class Subscriber():
                     #TODO - Don't need znode because we'll just check topic,history,strength in registry
                     sub_recv_pubdata.join()
                     lb_intf = self.find_my_publisher(self.topic, self.history)
-                    conn_str = f'tcp://{intf}:{self.port}'
+                    conn_str = f'tcp://{lb_intf}:{self.port}'
                     print(f"connecting: {conn_str}")
                     self.socket.connect(conn_str)
 
@@ -461,14 +499,12 @@ class Subscriber():
         return lambda: self.socket.recv_string()
     
     def get_pub_registry(self):
-        print("SUB thread Waiting on pub data ")
+        #receive publisher registry (e.g. pub_data) from leader
         message = self.register_socket.recv_string()
-        print(message)
-        print(type(message))
         print("Sub thread recv info")
+        #convert string to dictionary
         msg = eval(message)
-        print(type(msg))
-        print(msg["12345"])
+        #update local publisher registry (e.g. pub_data)
         self.pub_data = msg
         
     def find_my_publisher(self, topic, myhistreq):
@@ -483,7 +519,9 @@ class Subscriber():
         for k,v in self.pub_data[mytopic].items():
             tmp_history[k] = v['history']
 
-        meets_hist_req = dict((k, v) for k, v in tmp_history.items() if v >= myhistreq).keys()    
+        meets_hist_req = dict((k, v) for k, v in tmp_history.items() if v >= myhistreq).keys()   
+        print("History requirement list")
+        print(meets_hist_req)
         
         max_val = None
         
@@ -495,7 +533,10 @@ class Subscriber():
             elif max_val < tmp_val:
                 max_val = tmp_val
                 max_ip = self.pub_data[mytopic][p]['brocker_ip']
-                
+        print("My max ip")
+        if not max_ip:
+            print("Missing broker for publisher")
+        print(max_ip)
         return max_ip
 
     def plot_data(self, data_set, label=""):
