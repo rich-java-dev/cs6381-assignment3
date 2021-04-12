@@ -377,7 +377,6 @@ class Proxy():
         topic_count = len(self.zk.get_children(self.topic_root_path))
         idx = 0
         for i in range(0, replica_count):
-            print(self.replicas)
             rep_ip = self.zk.get(self.replica_root_path + "/" + self.replicas[i])[0]
 
             for j in range (idx * self.TOPIC_THRESHOLD, min(self.TOPIC_THRESHOLD + i * self.TOPIC_THRESHOLD, topic_count)):
@@ -392,7 +391,9 @@ class Proxy():
                 else:
                     print("----topic not in pub data")
             idx += 1
-            print(self.pub_data)            
+            print(self.pub_data)
+            b_pub_data = str(self.pub_data).encode('utf-8')
+            self.zk.set(self.leader_path, b_pub_data)
             print("Distr - exiting good\n")
                            
 class Publisher():
@@ -433,21 +434,29 @@ class Publisher():
 
         if self.proxy:  # PROXY MODE
 
-            #TODO - for load balancer - this should stay - just update semantics
-            #TODO - well just forward from proxy(now load balancer) to broker "n"
+            #TODO - should I just get registry information from leader LB?
+            # would need to ensure pubid exists then get worker/broker ip to connect
             @self.zk.DataWatch(self.leader_path)
             def proxy_watcher(data, stat):
-                print(f"Publisher: leader load balancer watcher triggered. data:{data}")
+                print(f"Publisher: leader load balancer watcher triggered.")
                 if data is not None:
-                    intf = data.decode('utf-8')
-                    conn_str = f'tcp://{intf}:{self.port}'
-                    print(f"connecting: {conn_str}")
-                    self.socket.connect(conn_str)
-                    
-                    #socket needs time to connect otherwise will pass over send string
-                    time.sleep(5)
-                    self.socket.send_string(f'register {self.pubid} {self.topic} {self.strength} {self.history}')
-
+                    try:
+                        leader_pub_data = data.decode('utf-8')
+                        pub_data = eval(leader_pub_data)
+                        print("Registry Data: ")
+                        print(pub_data)
+                        if self.topic in pub_data:
+                            if self.ip in pub_data[self.topic].keys():
+                                intf = pub_data[self.topic][self.ip]['broker_ip']
+                                conn_str = f'tcp://{intf}:{self.port}'
+                                print(f"connecting: {conn_str}")
+                                self.socket.connect(conn_str)
+                        
+                        #socket needs time to connect otherwise will pass over send string
+                        time.sleep(5)
+                        self.socket.send_string(f'register {self.pubid} {self.topic} {self.strength} {self.history}')
+                    except:
+                        print("...Waiting on Load Balancer to update publisher registry")
         else:  # FLOOD MODE
             conn_str = f'tcp://{self.ip}:{self.port}'
             print(f"binding: {conn_str}")
@@ -510,7 +519,8 @@ class Subscriber():
                 if data is not None:
                     intf = data.decode('utf-8')
 
-                    
+                    #TODO - should I just get registry information from leader LB?
+                    # would need to ensure pubid exists then get worker/broker ip to connect
                     #connect to register socket to get pub_data
                     self.register_socket = context.socket(zmq.SUB)
                     self.register_socket.subscribe("")
