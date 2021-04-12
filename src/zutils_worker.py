@@ -22,7 +22,7 @@ class Worker():
         self.my_path = None
         self.front_end = None
         self.back_end = None
-        self.replica_standby_path = "/workers/"
+        self.replica_standby_path = "/brokers/"
 
         #if self.zk.exists(self.replica_root_path) is None:
         #    self.zk.create(self.path, value=b'', ephemeral=True, makepath=True)

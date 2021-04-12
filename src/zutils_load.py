@@ -107,9 +107,14 @@ class Proxy():
             @self.zk.ChildrenWatch(self.replica_standby_path)
             def standby_watch(children):
                 print(f'\nStandby Worker Change Triggered')
-                time.sleep(1)
-                print("standby children")
-                print(children)
+            #IM HERE - if an ip in re
+                repls = self.zk.get_children(self.replica_root_path)
+                print(repls)
+                if repls:
+                    for p in children:
+                        temp = self.zk.get(self.replica_root_path + "/" + p[0])
+                        #TODO - MIGHT get rid of standbys and just have replicas
+            
 
                 if not self.zk.exists(self.replica_root_path):
                     self.zk.create(self.replica_root_path)
@@ -120,7 +125,7 @@ class Proxy():
                     print("broker_num:" + str(broker_num))
                     for i in range(broker_num):
                         broker_ip = self.zk.get(self.replica_standby_path +"/" + children[i])[0]
-                        self.zk.create(self.replica_root_path + "/", value = broker_ip, sequence=True, ephemeral=True)
+                        self.zk.create(self.replica_root_path + "/" + children[i], value = broker_ip, sequence=True, ephemeral=True)
                 
                 print("replica children")
                 c = self.zk.get_children(self.replica_root_path)
@@ -132,27 +137,41 @@ class Proxy():
             @self.zk.ChildrenWatch(self.topic_root_path)
             def topic_watch(children):
                 print(f"\nTopic Children Watch Triggered")
-                time.sleep(1) #TRY REMOVING - may need to wait for znode to populate after trigger
+                print("Current topic znodes")
                 print(children)
-                try: 
-
-                    self.topics = children
-                    if self.topics is not None:
-                        new_repl_cnt = ceil(len(self.topics)/self.TOPIC_THRESHOLD)
-
-#TODO - IM HERE - ERROR because no /broker - but there are standby replicas
-                        old_repl_cnt = self.zk.get_children(self.replica_root_path)
-                        if old_repl_cnt != new_repl_cnt:
-                            #create/delete replicase to match count - then call distribute topics
-                            print("Change in count - create new replicas")
-                            self.update_replicas(new_repl_cnt)
-                        else:
-                            print('- Topics changed but count remained same')
-                            #skip over create/delete replicachanges and check to see if we need to redistribute
-                            self.distribute_topics_to_replicas()
-                except NoNodeError:
-                    print("- No Topics yet - Pass")        
-                    
+                self.replicas = self.zk.get_children(self.replica_root_path)
+                if not self.replicas:
+                    print("ERROR - NO WORKERS")
+                else:
+                    for t in children:
+                        print("topic watch iterate through topic vals")
+                        b_val = self.zk.get(self.topic_root_path + "/" + t)[0]
+                        val = eval(b_val.decode('utf-8'))
+                        print(val)
+                    try: 
+                        self.topics = children
+                        if self.topics:
+                            print(self.topics)
+                            new_repl_cnt = max(1,ceil(len(self.topics)/self.TOPIC_THRESHOLD))
+                            old_repl_cnt = len(self.zk.get_children(self.replica_root_path))
+                            print("new repl cnt")
+                            print(new_repl_cnt)
+                            print("old repl cnt")
+                            print(old_repl_cnt)
+                            if new_repl_cnt > len(self.replicas):
+                                print("Need Additional Workers")
+                                
+                            elif old_repl_cnt != new_repl_cnt:
+                                #create/delete replicase to match count - then call distribute topics
+                                print("Change in count - create new replicas")
+                                self.update_replicas(new_repl_cnt)
+                            else:
+                                print('- Topics changed but count remained same')
+                                #skip over create/delete replicachanges and check to see if we need to redistribute
+                                self.distribute_topics_to_replicas()
+                    except NoNodeError:
+                        print("- No Topics yet - Pass")        
+                        
                     
 
             #Removed blocking proxy to set up registration vs. publish
@@ -234,7 +253,7 @@ class Proxy():
         print('********SUB REG THREAD*******')
         while True:
             self.register_socket.send_string(f'{self.pub_data}')
-            time.sleep (1)  
+            time.sleep (5)  
           
     def get_pub_msg(self):
         print('\n####  Run get pub message func ####')
@@ -271,6 +290,7 @@ class Proxy():
             elif add_this == 'publication':
                 stored_publication = publication + '--' + str(time.time())
                 self.pub_data[topic][pubid]['publications'].append(stored_publication)
+            
             print(f'- Updated Local State: {self.pub_data}')
             db_data = self.pub_data
         except KeyError as ex:
@@ -310,6 +330,7 @@ class Proxy():
         time.sleep(3)
         
         print(f'Update Replicas - Current Working Reps: {self.replicas}')
+        print(f"Rep Count: {rep_count}")
         
         #list of sorted standbys
         self.standbys = self.zk.get_children(self.replica_standby_path)
@@ -346,14 +367,31 @@ class Proxy():
                     
         #register dicts for pubs subs and brokers?
     def distribute_topics_to_replicas(self):
-        #TODO - need to set up different distributions
-        #sequential distribution where first replicas get topics up to threshold, last node gets whatever's left
-        for i in range(0, len(self.replicas)):
-            rep_ip = self.zk.get(self.replicas[i])[[0]] 
+        print("\nDistributing Topics to Replicas")
+        replica_count = len(self.replicas)
+        topic_count = len(self.zk.get_children(self.topic_root_path))
+        for i in range(0, replica_count):
+            print(f'iteration:{i}-----------')
+            print(self.replicas)
+            rep_ip = self.zk.get(self.replica_root_path + "/" + self.replicas[i])[0]
+            print(f'----- {rep_ip}')
             idx = 0
-            for j in range (idx * self.TOPIC_THRESHOLD, self.TOPIC_THRESHOLD + i * self.TOPIC_THRESHOLD):
+            for j in range (idx * self.TOPIC_THRESHOLD, min(self.TOPIC_THRESHOLD + i * self.TOPIC_THRESHOLD, topic_count)):
                 self.zk.set(self.topic_root_path + "/" + self.topics[j], rep_ip)
                 #update topic pubs/subs fo
+                print(f"---iteration:{i}-{j}")
+                print("---topic")
+                print(self.topics[j])
+                time.sleep(3)
+                if self.topics[j] in self.pub_data:
+                    print("----topic in pub data")
+                    for t in self.pub_data[self.topics[j]]:
+                        self.pub_data[self.topics[j]][t]["broker_ip"] = rep_ip.decode('utf-8')
+                else:
+                    print("----topic not in pub data")
+                        
+            print(self.pub_data)            
+            print("Distr - exiting good\n")
                            
 class Publisher():
 
@@ -384,7 +422,9 @@ class Publisher():
             
         #TODO = create topic under parent /topic/ - trigger children watch above
         if not self.zk.exists(self.path):
-            self.zk.create(self.path, value=self.ip.encode('utf-8'), ephemeral=True)
+            pub_val = {"pub_ip": self.ip, "strength":self.strength, "history": self.history, "topic":self.topic}
+            b_pub_val = str(pub_val).encode('utf-8')
+            self.zk.create(self.path, value=b_pub_val, ephemeral=True)
             print(f'Created Znode: {self.path} : {self.ip}')
 
         print(f'Publishing - Proxy: {self.proxy}, Topic: {self.topic}')
