@@ -41,7 +41,7 @@ class Worker():
         #Set up zmq proxy socket
         self.front_end = self.context.socket(zmq.SUB)
         self.front_end.bind(f"tcp://*:{self.in_bound}")
-        #self.front_end.subscribe("")
+        self.front_end.subscribe("")
         self.back_end = self.context.socket(zmq.PUB)
         self.back_end.setsockopt(zmq.XPUB_VERBOSE, 1)
         self.back_end.bind(f"tcp://*:{self.out_bound}") 

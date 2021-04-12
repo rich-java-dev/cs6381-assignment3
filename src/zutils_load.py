@@ -138,7 +138,11 @@ class Proxy():
             def topic_watch(children):
                 print(f"\nTopic Children Watch Triggered")
                 print("Current topic znodes")
-                print(children)
+                
+                child_topics = []
+                for c in children:
+                    child_topics.append(c[:-10])
+                print(child_topics)
                 #update pub data
                 for child in children:
                     #get dict value with topic, strength,history for each topic
@@ -165,7 +169,7 @@ class Proxy():
                         val = eval(b_val.decode('utf-8'))
                         print(val)
                     try: 
-                        self.topics = children
+                        self.topics = child_topics
                         if self.topics:
                             print(self.topics)
                             new_repl_cnt = max(1,ceil(len(self.topics)/self.TOPIC_THRESHOLD))
@@ -427,7 +431,7 @@ class Publisher():
         if not self.zk.exists(self.path):
             pub_val = {"pubid": self.pubid, "pub_ip": self.ip, "strength":self.strength, "history": self.history, "topic":self.topic}
             b_pub_val = str(pub_val).encode('utf-8')
-            self.zk.create(self.path, value=b_pub_val, ephemeral=True)
+            self.zk.create(self.path, value=b_pub_val, sequence=True, ephemeral=True)
             print(f'Created Znode: {self.path} : {self.ip}')
 
         print(f'Publishing - Proxy: {self.proxy}, Topic: {self.topic}')
@@ -517,23 +521,44 @@ class Subscriber():
             def proxy_watcher(data, stat):
                 print(f"Subscriber: proxy watcher triggered. data:{data}")
                 if data is not None:
-                    intf = data.decode('utf-8')
-
-                    #TODO - should I just get registry information from leader LB?
-                    # would need to ensure pubid exists then get worker/broker ip to connect
-                    #connect to register socket to get pub_data
-                    self.register_socket = context.socket(zmq.SUB)
-                    self.register_socket.subscribe("")
-                    self.register_socket.connect(f'tcp://{intf}:{self.register_port}')
-                    sub_recv_pubdata = threading.Thread(target=self.get_pub_registry)
-                    sub_recv_pubdata.start()
-                    #TODO for load balancing - will check registry rather than znode
-                    #TODO - Don't need znode because we'll just check topic,history,strength in registry
-                    sub_recv_pubdata.join()
-                    lb_intf = self.find_my_publisher(self.topic, self.history)
-                    conn_str = f'tcp://{lb_intf}:{self.port}'
-                    print(f"connecting: {conn_str}")
-                    self.socket.connect(conn_str)
+                    try:
+                        leader_pub_data = data.decode('utf-8')
+                        pub_data = eval(leader_pub_data)
+                        print("Registry Data: ")
+                        print(pub_data)
+                        mytopic = str(self.topic)
+                        tmp_strength = {}
+                        tmp_history = {}
+                        
+                        print("before for loops")
+                        for k,v in pub_data[mytopic].items():
+                            tmp_strength[k] = v['strength']
+                            
+                        for k,v in pub_data[mytopic].items():
+                            tmp_history[k] = v['history']
+                        
+                        meets_hist_req = dict((k, v) for k, v in tmp_history.items() if v >= int(self.history))   
+                        print("History requirement list")
+                        print(meets_hist_req)
+            
+                        max_val = None
+                        
+                        for p in meets_hist_req:
+                            tmp_val = pub_data[mytopic][p]['strength']
+                            if max_val == None:
+                                max_val = tmp_val 
+                                max_ip = pub_data[mytopic][p]['broker_ip']
+                            elif max_val < tmp_val:
+                                max_val = tmp_val
+                                max_ip = pub_data[mytopic][p]['brocker_ip']
+                        if not max_ip:
+                            print("Missing broker for publisher")
+                        intf = max_ip
+                        conn_str = f'tcp://{intf}:{self.port}'
+                        print(f"connecting: {conn_str}")
+                        self.socket.connect(conn_str)
+                    except:
+                        print("...Waiting on Load Balancer to update publisher registry")
 
         else:  # FLOOD MODE
 
@@ -549,48 +574,7 @@ class Subscriber():
         self.socket.setsockopt_string(zmq.SUBSCRIBE, self.topic)
 
         return lambda: self.socket.recv_string()
-    
-    def get_pub_registry(self):
-        #receive publisher registry (e.g. pub_data) from leader
-        message = self.register_socket.recv_string()
-        print("Sub thread recv info")
-        #convert string to dictionary
-        msg = eval(message)
-        #update local publisher registry (e.g. pub_data)
-        self.pub_data = msg
-        
-    def find_my_publisher(self, topic, myhistreq):
-        """"pub_data = {'topic': {'pubid': {'strength':x, history: y, broker_ip: xxx.xx.xxx, publications: []}}}"""
-        print(self.pub_data)
-        mytopic = str(topic)
-        tmp_strength = {}
-        tmp_history = {}
-        for k,v in self.pub_data[mytopic].items():
-            tmp_strength[k] = v['strength']
-    
-        for k,v in self.pub_data[mytopic].items():
-            tmp_history[k] = v['history']
-
-        meets_hist_req = dict((k, v) for k, v in tmp_history.items() if v >= myhistreq).keys()   
-        print("History requirement list")
-        print(meets_hist_req)
-        
-        max_val = None
-        
-        for p in meets_hist_req:
-            tmp_val = self.pub_data[mytopic][p]['strength']
-            if max_val == None:
-                max_val = tmp_val 
-                max_ip = self.pub_data[mytopic][p]['broker_ip']
-            elif max_val < tmp_val:
-                max_val = tmp_val
-                max_ip = self.pub_data[mytopic][p]['brocker_ip']
-        print("My max ip")
-        if not max_ip:
-            print("Missing broker for publisher")
-        print(max_ip)
-        return max_ip
-
+ 
     def plot_data(self, data_set, label=""):
 
         # plot the time deltas
