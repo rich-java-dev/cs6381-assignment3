@@ -510,10 +510,7 @@ class Publisher():
         #create parent znode
         if not self.zk.exists(self.topic_root_path):
             self.zk.create(self.topic_root_path)
-        else:
-            print("Exists: " + self.topic_root_path)
-            
-        #TODO = create topic under parent /topic/ - trigger children watch above
+
         if not self.zk.exists(self.path):
             pub_val = {"pubid": self.pubid, "pub_ip": self.ip, "strength":self.strength, "history": self.history, "topic":self.topic}
             b_pub_val = str(pub_val).encode('utf-8')
@@ -528,7 +525,7 @@ class Publisher():
             # would need to ensure pubid exists then get worker/broker ip to connect
             @self.zk.DataWatch(self.leader_path)
             def proxy_watcher(data, stat):
-                print(f"Publisher: leader load balancer watcher triggered.")
+                print(f"#### Publisher: Leader Load Balancer Change")
                 if data is not None:
                     try:
                         leader_pub_data = data.decode('utf-8')
@@ -584,7 +581,7 @@ class Publisher():
 
 class Subscriber():
 
-    def __init__(self, port=5556, zkserver="10.0.0.1", topic='12345', history = "15", proxy=True):
+    def __init__(self, port=5556, zkserver="10.0.0.1", topic='12345', history = "0", proxy=True):
         self.port = port
         self.topic = topic
         self.history = history
@@ -599,7 +596,10 @@ class Subscriber():
         self.register_socket = None
     
     def start(self):
-        print(f"Subscriber: {self.ip}")
+        print(f"\n#### Subscriber: {self.ip} Details ####")
+        print("  - Requirements:")
+        print(f"  - History: {self.history}")
+        print(f"  - Topic: {self.topic}")
 
         if self.proxy:  # PROXY MODE
 
@@ -616,15 +616,19 @@ class Subscriber():
                         tmp_strength = {}
                         tmp_history = {}
                         
-                        print("before for loops")
+                        print("\n## Check Publishers for Strength/History ##")
                         for k,v in pub_data[mytopic].items():
                             tmp_strength[k] = v['strength']
                             
                         for k,v in pub_data[mytopic].items():
                             tmp_history[k] = v['history']
                         
-                        meets_hist_req = dict((k, v) for k, v in tmp_history.items() if v >= int(self.history))   
-                        print("History requirement list")
+                        print(f"  - List of Worker's Strength for Topic: {mytopic}")
+                        print(tmp_strength)
+                        print(f"\n  - List of Worker's History for Topic: {mytopic}")                        
+                        print(tmp_history)
+                        meets_hist_req = dict((k, v) for k, v in tmp_history.items() if v >= int(self.history)) 
+                        print("\nPublisher's Meeting History Requirements")
                         print(meets_hist_req)
             
                         max_val = None
@@ -639,9 +643,11 @@ class Subscriber():
                                 max_ip = pub_data[mytopic][p]['brocker_ip']
                         if not max_ip:
                             print("Missing broker for publisher")
+                        print("Publisher with Highest Strength Meeting History Requirements")
+                        print(f"  - Worker IP of Matched Publisher: {max_ip}")
                         intf = max_ip
                         conn_str = f'tcp://{intf}:{self.port}'
-                        print(f"connecting: {conn_str}")
+                        print(f"connecting: {conn_str}\n")
                         self.socket.connect(conn_str)
                     except:
                         print("...Waiting on Load Balancer to update publisher registry")

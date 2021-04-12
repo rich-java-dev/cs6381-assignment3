@@ -12,7 +12,7 @@ parser.add_argument("--zkserver", "--zkintf", default="10.0.0.1")
 parser.add_argument("--port", default="5556")
 parser.add_argument("--topic", default="12345")
 #Added history argument
-parser.add_argument("--history", default="15")
+parser.add_argument("--history", default="5")
 parser.add_argument("--sample_size", "--samples", default=100)
 parser.add_argument("--label", default="default")
 args = parser.parse_args()
