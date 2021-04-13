@@ -17,7 +17,8 @@
 
 Zookeeper Taxonomy:
 
-```/leader
+```
+/leader
 {
 topic1: { pub_ip1: {broker_ip:ip, strength:s, history:h},
 	  pub_ip2: {...}}
