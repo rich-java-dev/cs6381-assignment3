@@ -14,15 +14,48 @@
 - ie: topic '12345' is being published via host at IP 10.0.0.2
 
 ## Centralized 
-- Replicas play 2 roles: Load Balancing, and Coordination
-- 'Workers' play the role of Broker for the given topics they are prescribed.
-- 'Load' plays the role of coordinator to parse out the load across the workers.
-- There is no limit to the number of 'Workers' that can be deployed, but generally there will be 1 active 'Loader' (Multiples can be set up for redundancy/election if it fails)
-- When a Publisher registers itself in ZK, the Loader assigns it to a 'Worker' or active Broker.
-- The Loader uses thresholds, by topic count, to determine where to assign the Pubs.
-- Subscribers are able to look-up their topic, and recieve a list of publishers which are active on the given topic.
-- Subscribers then filter down for their criteria (eg: Greatest Strength pub on a given topic that meets the required 'history' criteria)
 
+Zookeeper Taxonomy:
+
+```/leader
+{
+topic1: { pub_ip1: {broker_ip:ip, strength:s, history:h},
+	  pub_ip2: {...}}
+topic2: { pub_ip3: {broker_ip:ip, strength:s, history:h},
+	  pub_ip4: {...}}
+}
+
+/topic
+[
+id: pubid:id, pub_ip: ip, strength:s, history:h, topic:t}
+id: pubid:id, pub_ip: ip, strength:s, history:h, topic:t}
+]
+
+/brokers
+[
+0: broker_ip
+1: broker_ip
+2: broker_ip
+]
+
+/workers
+/election
+```
+
+
+Process:
+
+ - workers are registered at start-up in /broker
+ - loaders are registered at start-up /election
+ - 1 loader is elected 'leader'
+ - Publisher Registers itself in /topic
+ - Publisher sets Watcher on /leader
+ - Loader listens for changes on /topic, and when triggered, processes over /topic objects, groups them accordingly, and creates /worker requests
+ - /worker request triggers matches from broker/worker to topic
+ - Loader set /leader with the new mapping
+ - Publisher is notified and establishes connection to broker via /leader mapping.
+ - Subscriber listens to /leader
+ - Subscriber is notified and establishers connection to broker via /leader mapping.
 
 >Subscribers generate their own plots/graphs of the delta times between the publisher pushing the data, and the subscriber receipting the data. The latency is calculated in two ways - First with wireshark sniffing and a second way by utilizing timestamps for the publishers sent time and the subscriber's received time.  The plots of latency are generated with Matplotlib.
 
