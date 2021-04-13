@@ -15,7 +15,7 @@ parser.add_argument("--proxy_mode", action="store_true", default=False)
 parser.add_argument("--xin", default="5555")  # for use with broker
 parser.add_argument("--xout", default="5556")  # for use with broker
 parser.add_argument("--pub_count", default=5)
-parser.add_argument("--proxy_count", default=3)
+parser.add_argument("--proxy_count", default=4)
 args = parser.parse_args()
 
 # gets reference to directory of this project to launch scripts
@@ -69,7 +69,7 @@ if proxy_mode:  # PROXY MODE
 
     for i in range(0, proxy_count):  # run proxies
         host_idx = 1 + i
-        cmd_str = f'python3 {src_dir}/proxy.py &'
+        cmd_str = f'python3 {src_dir}/replica.py --type=worker &'
         print(cmd_str)
         net.hosts[host_idx].cmd(cmd_str)
 

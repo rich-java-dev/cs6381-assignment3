@@ -27,7 +27,7 @@ class Worker():
         #if self.zk.exists(self.replica_root_path) is None:
         #    self.zk.create(self.path, value=b'', ephemeral=True, makepath=True)
         
-        if self.zk.exists(self.replica_standby_path) is None:
+        if not self.zk.exists(self.replica_standby_path):
             self.zk.create(self.replica_standby_path)
  
         encoded_ip = self.ip.encode('utf-8')
