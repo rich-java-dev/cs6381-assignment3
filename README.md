@@ -1,8 +1,7 @@
 # Distributed Systems Principles - Assignment 3
 
-## Pub/Sub Distributed Message Queue with Leader Election/Zookeeper
+## Pub/Sub MQ Implementation w/ Load Balancing/Broker Replication
 ### Richard White, Max Coursey 
-
 
  PUB/SUB model supported by the ZeroMQ (ZMQ) middleware. Application maintains a broker, well known to the publishers and subscribers. This broker performs matchmaking. Data is disseminated from publishers to subscribers in a globally configurable way using one of the two approaches.
 
@@ -11,17 +10,21 @@
 - Look-up is now handled via Zookeeper, instead of a lame-broker of scanning the entire network. 
 - Look-up is done via a root znode "/topic", which contains children registered by the Publisher
 - The value stored at the given topic is the IP of the publisher which pushes data
-- eg: /topic/12345 -> 10.0.0.2
+- eg: /topic/12345 -> {id: 1, ip:10.0.0.2, strength:10, history: 10}
 - ie: topic '12345' is being published via host at IP 10.0.0.2
 
 ## Centralized 
-- Publisher’s middleware sends information to the broker, which then sends on to the subscribers for this topic.
-- Look-up of the broker is now handled via Zookeeper, instead of being required as an argument passed to the Pub/Subs
-- This now means that pubs and subs alike must know the server/host running Zookeeper
-- Look-up is done via a znode "/proxy", which stores the IP of the zookeeper server's host
+- Replicas play 2 roles: Load Balancing, and Coordination
+- 'Workers' play the role of Broker for the given topics they are prescribed.
+- 'Load' plays the role of coordinator to parse out the load across the workers.
+- There is no limit to the number of 'Workers' that can be deployed, but generally there will be 1 active 'Loader' (Multiples can be set up for redundancy/election if it fails)
+- When a Publisher registers itself in ZK, the Loader assigns it to a 'Worker' or active Broker.
+- The Loader uses thresholds, by topic count, to determine where to assign the Pubs.
+- Subscribers are able to look-up their topic, and recieve a list of publishers which are active on the given topic.
+- Subscribers then filter down for their criteria (eg: Greatest Strength pub on a given topic that meets the required 'history' criteria)
 
 
-Subscribers generate their own plots/graphs of the delta times between the publisher pushing the data, and the subscriber receipting the data. The latency is calculated in two ways - First with wireshark sniffing and a second way by utilizing timestamps for the publishers sent time and the subscriber's received time.  The plots of latency are generated with Matplotlib.
+>Subscribers generate their own plots/graphs of the delta times between the publisher pushing the data, and the subscriber receipting the data. The latency is calculated in two ways - First with wireshark sniffing and a second way by utilizing timestamps for the publishers sent time and the subscriber's received time.  The plots of latency are generated with Matplotlib.
 
 The main.py method can take an arugment of the number of pub/subs and whether to utilize the centralized or simulated flooding method.
 
@@ -50,43 +53,37 @@ Python libraries:
 - matplotlib - sudo apt-get install python3-matplotlib
 
 ## SET-UP:
-- Clone repo - https://github.com/rich-java-dev/cs6381-assignment2.git
-- Navigate to cs6381-assignment2 folder
+- Clone repo - https://github.com/rich-java-dev/cs6381-assignment3.git
+
+- Navigate to cs6381-assignment3 folder
 - run **pip install -r requirements.txt**
  - This will ensure all the of python packages used are installed.
 - run **sudo mn -c** between runs
 - run **ps -e | grep java** to get a list of pids for java apps to ensure zookeeper is not already running
 - run **sudo kill {pid}** to kill any existing java apps (We will deploy Zookeeper on a mininet host)
 
+- watch the following demo - https://youtu.be/BV68_xNUDXI
 
-## Running via main.py script
-- Run the following commands from main Ubuntu CLI (not any mininet xterm window)
-
-With Broker:
- >sudo python3 main.py --zkpath='/path/to/zkserver/bin' --pub_count=10 --proxy_mode
-
-For flooding:
- >sudo python3 main.py --zkpath='/path/to/zkserver/bin' --pub_count=10
 
 ## **Running mininet and commands manually in xterm windows**
 >
  - sudo mn -x --topo=linear,10
  - **host1**: /path/to/zookeeper/bin/zkServer.sh start
- - **host2**: python3 proxy.py --zkserver={ip if not host1, else ommit}
- - **host3**: python3 proxy.py --zkserver={ip if not host1, else ommit}
- - **host4**: python3 proxy.py --zkserver={ip if not host1, else ommit}
- - **host5**: python3 publisher.py --proxy --zkserver={ip if not host1, else ommit}
- - **host6**: python3 subscriber.py --proxy --samples=10000 --zkserver={ip if not host1, else ommit}
+ - **host2**: python3 replica.py --type=worker
+ - **host3**: python3 replica.py --type=worker
+ - **host4**: python3 replica.py --type=worker
+ - **host5**: python3 replica.py
+ - **host6**: python3 publisher.py --proxy --topic="a"
+ - **host7**: python3 publisher.py --proxy --topic="a"
+ - **host8**: python3 subscriber.py --proxy --topic="a"
+ - add more pubs/subs as needed.
 
-- Once the Subscriber begins receiving messages, kill host2
-- Host3 will be elected leader, and after a few seconds the subscriber will begin receiving connections via the new proxy
-- Kill Host3, and Host4 will be elected leader, same as described above.
 
 
 ## App Structure
 
-**proxy.py**
-usage: proxy.py --xin=5555 --xout=5556 --zkserver=10.0.0.1 [-h] [--zkserver ZKSERVER] [--xin XIN] [--xout XOUT]
+**replica.py**
+usage: replica.py --xin=5555 --xout=5556 --zkserver=10.0.0.1 [-h] [--zkserver ZKSERVER] [--xin XIN] [--xout XOUT]
 
 >optional arguments:
   -h, --help            show this help message and exit

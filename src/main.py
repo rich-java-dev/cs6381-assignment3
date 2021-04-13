@@ -38,7 +38,8 @@ print(f'host count: {host_count}')
 
 # mininet specific set-up
 net_topo = LinearTopo(k=host_count)  # feel free to run with other topos
-net = Mininet(topo=net_topo)  # create the Mininet network w/ given topo and size
+# create the Mininet network w/ given topo and size
+net = Mininet(topo=net_topo)
 net.start()
 
 # ports used by the proxy for listening and broadcasting
@@ -62,14 +63,14 @@ zk_script = f'{zkpath}/zkServer.sh start &'
 print(zk_script)
 net.hosts[0].cmd(zk_script)
 
-#Give zookeeper a few seconds to start before running components which need zk up
+# Give zookeeper a few seconds to start before running components which need zk up
 time.sleep(2)
 
 if proxy_mode:  # PROXY MODE
 
     for i in range(0, proxy_count):  # run proxies
         host_idx = 1 + i
-        cmd_str = f'python3 {src_dir}/replica.py --type=worker &'
+        cmd_str = f'python3 {src_dir}/replica.py --type={"worker" if host_idx<proxy_count else "broker"}worker &'
         print(cmd_str)
         net.hosts[host_idx].cmd(cmd_str)
 
